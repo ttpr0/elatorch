@@ -95,9 +95,9 @@ def ela_meta(X: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
         'ela_meta.quad_w_interact.adj_r2': quad_w_interact_adj_r2,
     }
 
-def nearest_better_clustering_2(
-    X: torch.Tensor, y: torch.Tensor, fast_k: float = 0.05,
-    dist_tie_breaker: str = 'sample', minimize: bool = True
+def nearest_better_clustering(
+    X: torch.Tensor, y: torch.Tensor,
+    minimize: bool = True
 ) -> dict:
     """
     Differentiable PyTorch implementation of Nearest Better Clustering (NBC) features.
@@ -108,10 +108,6 @@ def nearest_better_clustering_2(
         Tensor containing the decision space samples (n_samples x n_features).
     y : torch.Tensor
         Tensor containing the respective objective values (n_samples).
-    fast_k : float, optional
-        Percentage of observations to consider when searching for nearest better neighbors, by default 0.05.
-    dist_tie_breaker : str, optional
-        Strategy for breaking ties ('sample', 'first', 'last'), by default 'sample'.
     minimize : bool, optional
         Whether the objective function is to be minimized, by default True.
 
@@ -119,9 +115,6 @@ def nearest_better_clustering_2(
     -------
         Dictionary containing the calculated NBC features.
     """
-    def adjusted_objective(y, minimize):
-        return y if minimize else -y
-
     def compute_distances(X):
         # Compute pairwise squared distances
         diff = X[:, None, :] - X[None, :, :]
@@ -129,23 +122,33 @@ def nearest_better_clustering_2(
         distances = torch.sqrt(sq_distances + 1e-12)  # Avoid zero for numerical stability
         return distances
 
-    def find_nearest_neighbors(distances, k):
-        # Get the indices of the k nearest neighbors for each point (excluding itself)
-        _, indices = distances.topk(k + 1, dim=-1, largest=False)
-        return indices[:, 1:]  # Exclude self (distance = 0)
+    def nearest_neighbors(distances):
+        # Get the indices of the nearest neighbor for each point (excluding itself)
+        _, indices = distances.topk(2, dim=-1, largest=False)
+        indices = indices[:, 1:] # Exclude self (distance = 0)
+        return torch.gather(distances, 1, indices).flatten(), indices.flatten()
 
     def nearest_better_neighbors(X, y, distances):
+        _distances = distances.clone()
         n_samples = X.size(0)
         nb_distances = torch.full((n_samples,), float('inf'), device=X.device)
         nb_indices = torch.full((n_samples,), -1, dtype=torch.long, device=X.device)
         for idx in range(n_samples):
-            dist = distances[idx, :].clone()
+            dist = _distances[idx, :]
             better = y < y[idx]
             if better.any():
-                dist[better] = float('inf')
-                nb_idx = distances.argmin()
+                dist[~better] = float('inf')
+                nb_idx = dist.argmin()
                 nb_distances[idx] = distances[idx, nb_idx]
                 nb_indices[idx] = nb_idx
+            else:
+                better = y == y[idx]
+                better[idx] = False
+                if better.any():
+                    dist[~better] = float('inf')
+                    nb_idx = dist.argmin()
+                    nb_distances[idx] = distances[idx, nb_idx]
+                    nb_indices[idx] = nb_idx
         return nb_distances, nb_indices
 
     def compute_correlation(x, y):
@@ -157,39 +160,26 @@ def nearest_better_clustering_2(
         return cov / (std_x * std_y + 1e-12)  # Avoid division by zero
 
     # Adjust objective values
-    y = adjusted_objective(y, minimize)
-
-    # Number of samples to consider in fast_k
-    k = max(1, int(fast_k * X.size(0)))
+    y = y if minimize else -y
 
     # Compute pairwise distances
     distances = compute_distances(X)
-
     # Find nearest neighbors
-    nn_indices = find_nearest_neighbors(distances, k)
-
+    nn_distances, nn_indices = nearest_neighbors(distances)
     # Find nearest better neighbors
     nb_distances, nb_indices = nearest_better_neighbors(X, y, distances)
 
-    # Replace NaNs in nb_distances with nearest neighbor distances
-    nb_distances[torch.isinf(nb_distances)] = distances[torch.arange(X.size(0)), nn_indices[:, 0]][torch.isinf(nb_distances)]
+    # Replace possible NA values (no better neighbour found) with distance to the nearest neighbour
+    nb_no_nan = torch.isfinite(nb_distances)
+    nb_distances[~nb_no_nan] = nn_distances[~nb_no_nan]
+    nn_nb_ratio = torch.divide(nn_distances, nb_distances)
+    nb_counts = torch.bincount(nb_indices[nb_indices >= 0], minlength=X.size(0)).to(torch.float32)
 
-    # Calculate nn_nb features
-    nn_distances = distances[torch.arange(X.size(0)), nn_indices[:, 0]]
-    nn_nb_sd_ratio = nn_distances.std(unbiased=True) / nb_distances.std(unbiased=True)
-    nn_nb_mean_ratio = nn_distances.mean() / nb_distances.mean()
+    nn_nb_sd_ratio = torch.std(nn_distances) / torch.std(nb_distances)
+    nn_nb_mean_ratio = torch.mean(nn_distances) / torch.mean(nb_distances)
     nn_nb_correlation = compute_correlation(nn_distances, nb_distances)
-
-    # Calculate dist_ratio coefficient of variation
-    dist_ratio = nn_distances / nb_distances
-    dist_ratio_coeff_var = dist_ratio.std(unbiased=True) / dist_ratio.mean()
-
-    # Calculate nb_fitness correlation
-    indegree = torch.zeros_like(y)
-    for idx in range(nb_indices.size(0)):
-        if nb_indices[idx] != -1:
-            indegree[nb_indices[idx]] += 1
-    nb_fitness_correlation = compute_correlation(indegree, y)
+    dist_ratio_coeff_var = torch.std(nn_nb_ratio) / torch.mean(nn_nb_ratio)
+    nb_fitness_correlation = compute_correlation(nb_counts, y)
 
     return {
         'nbc.nn_nb.sd_ratio': nn_nb_sd_ratio,
@@ -197,147 +187,6 @@ def nearest_better_clustering_2(
         'nbc.nn_nb.cor': nn_nb_correlation,
         'nbc.dist_ratio.coeff_var': dist_ratio_coeff_var,
         'nbc.nb_fitness.cor': nb_fitness_correlation,
-    }
-
-def nearest_better_clustering(
-    X: torch.Tensor,  # Changed to torch.Tensor
-    y: torch.Tensor,  # Changed to torch.Tensor
-    fast_k: float = 0.05,
-    dist_tie_breaker: str = 'sample',
-    minimize: bool = True
-) -> dict[str, int | float]:
-    """
-    Differentiable PyTorch implementation of Nearest Better Clustering (NBC) features.
-
-    Parameters
-    ----------
-    X : torch.Tensor
-        Tensor containing the decision space samples (n_samples x n_features).
-    y : torch.Tensor
-        Tensor containing the respective objective values (n_samples).
-    fast_k : float, optional
-        Percentage of observations to consider when searching for nearest better neighbors, by default 0.05.
-    dist_tie_breaker : str, optional
-        Strategy for breaking ties ('sample', 'first', 'last'), by default 'sample'.
-    minimize : bool, optional
-        Whether the objective function is to be minimized, by default True.
-
-    Returns
-    -------
-        Dictionary containing the calculated NBC features.
-    """
-    # Ensure inputs are tensors
-    if not isinstance(X, torch.Tensor):
-        X = torch.tensor(X, dtype=torch.float32)
-    if not isinstance(y, torch.Tensor):
-        y = torch.tensor(y, dtype=torch.float32)
-
-    # Ensure that y is a column vector
-    y = y.view(-1)
-
-    # Adjust fast_k to be an integer
-    if fast_k < 1:
-        fast_k = math.ceil(fast_k * X.shape[0])
-    if fast_k < 0 or fast_k > X.shape[0]:
-        raise ValueError(f'[{fast_k}] of "fast_k" does not lie in the interval [0,n] where n is the number of observations.')
-    if not minimize:
-        y = y * -1
-
-    # Compute pairwise distances (Euclidean distance)
-    def compute_distances(X):
-        diff = X.unsqueeze(1) - X.unsqueeze(0)  # Shape (n, n, d)
-        return torch.norm(diff, dim=2)  # Shape (n, n)
-
-    dist_matrix = compute_distances(X)
-
-    # Find the nearest neighbors (ignoring the self distance)
-    _, indices = torch.topk(dist_matrix, fast_k + 1, largest=False, sorted=False)
-
-    results = []
-
-    for idx in range(X.shape[0]):
-        # for every sample 'idx' find the BETTER neighbours 'nnb' out of the 'fast_k' nearest neighbours
-        y_rec = y[idx]
-        ind_nn = indices[idx, 1:]  # Exclude self
-        y_near = y[ind_nn]
-        better = (y_near < y_rec).to(torch.int32)
-
-        # If there are better neighbors, select the closest one
-        if better.sum() > 0:
-            b_idx = better.argmax()
-            results.append([idx, ind_nn[b_idx], dist_matrix[idx, ind_nn[b_idx + 1]]])
-
-        # If no better neighbors, get the nearest better neighbor from the entire dataset
-        else:
-            # Get the indices of all other points
-            # ind_alt = torch.setdiff1d(torch.arange(X.shape[0]), indices[idx])
-            combined = torch.cat((indices[idx], torch.arange(X.shape[0])))
-            uniques, counts = combined.unique(return_counts=True)
-            ind_alt = uniques[counts == 1]
-            alt_y = y[ind_alt]
-
-            # Find valid alternatives (better neighbors)
-            valid_alt = ind_alt[alt_y < y_rec]
-            if valid_alt.size(0) == 0:
-                valid_alt = ind_alt[alt_y == y_rec]
-            if valid_alt.size(0) == 0:
-                results.append([idx, torch.tensor(torch.nan), torch.tensor(torch.nan)])
-                continue
-
-            # Compute distances for alternatives
-            alt_dist = torch.norm(X[valid_alt] - X[idx], dim=1)
-            min_dist_idx = alt_dist.argmin()
-
-            if len(min_dist_idx) > 1:
-                if dist_tie_breaker == 'sample':
-                    min_dist_idx = min_dist_idx[torch.randint(len(min_dist_idx), (1,))]
-                elif dist_tie_breaker == 'first':
-                    min_dist_idx = min_dist_idx[0]
-                elif dist_tie_breaker == 'last':
-                    min_dist_idx = min_dist_idx[-1]
-                else:
-                    raise ValueError('Possible tie breaker methods are "sample", "first", and "last"')
-
-            results.append([idx, valid_alt[min_dist_idx], alt_dist[min_dist_idx]])
-
-    nb_stats = torch.tensor(results, dtype=torch.float32)
-    near_dist = dist_matrix[:, 1:].mean(dim=1)  # Average nearest distances
-    near_better_dist = nb_stats[:, 2]
-    nb_near_ratio = near_better_dist / near_dist
-
-    nb_stats = torch.cat((nb_stats, near_dist.view(-1, 1), nb_near_ratio.view(-1, 1), y.view(-1, 1)), dim=1)
-
-    # Compute fitness statistics
-    result_stats = []
-    for own_id in range(X.shape[0]):
-        x = nb_stats[:, 1] == own_id
-        count = x.sum()
-        if count > 0:
-            to_me_dist = near_better_dist[x].nanmedian()
-            result_stats.append([count, to_me_dist, near_better_dist[own_id] / to_me_dist])
-        else:
-            result_stats.append([0, torch.tensor(torch.nan), torch.tensor(torch.nan)])
-
-    result_stats = torch.tensor(result_stats)
-
-    # Replace possible NA values (occurring when no better nearer neighbour is found) with the distance to the closest nearest neighbour
-    near_better_dist = torch.where(torch.isnan(near_better_dist), near_dist, near_better_dist)
-    dist_ratio = near_dist / near_better_dist
-
-    # Calculate Pearson correlation using PyTorch
-    def pearson_corr(x, y):
-        mean_x = torch.mean(x)
-        mean_y = torch.mean(y)
-        std_x = torch.std(x)
-        std_y = torch.std(y)
-        return torch.mean((x - mean_x) * (y - mean_y)) / (std_x * std_y)
-
-    return {
-        'nbc.nn_nb.sd_ratio': torch.std(near_dist) / torch.std(near_better_dist),
-        'nbc.nn_nb.mean_ratio': torch.mean(near_dist) / torch.mean(near_better_dist),
-        'nbc.nn_nb.cor': pearson_corr(near_dist, near_better_dist),
-        'nbc.dist_ratio.coeff_var': torch.std(dist_ratio) / torch.mean(dist_ratio),
-        'nbc.nb_fitness.cor': pearson_corr(result_stats[:, 0], y)
     }
 
 def ela_distribution(
