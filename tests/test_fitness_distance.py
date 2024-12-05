@@ -13,7 +13,7 @@ def test_ela_meta_simple():
     meta_torch = fitness_distance_correlation(torch.tensor(X), torch.tensor(y))
 
     for k, v in meta_torch.items():
-        assert math.isclose(v, meta[k]), f"{k} does not match"
+        assert math.isclose(v, meta[k], rel_tol=1e-5), f"{k} does not match"
 
 def test_ela_meta_complex():
     X, y = generate_complex_sample(100)
@@ -22,4 +22,4 @@ def test_ela_meta_complex():
     meta_torch = fitness_distance_correlation(torch.tensor(X), torch.tensor(y))
 
     for k, v in meta_torch.items():
-        assert math.isclose(v, meta[k]), f"{k} does not match"
+        assert math.isclose(v, meta[k], rel_tol=1e-5), f"{k} does not match"

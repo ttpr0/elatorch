@@ -3,9 +3,13 @@ import math
 import torch
 
 def fitness_distance_correlation(
-    X: torch.Tensor, y: torch.Tensor, f_opt: float | None = None,
-    proportion_of_best: float = 0.1, minimize: bool = True, minkowski_p: int = 2
-) -> dict[str, int | float]:
+    X: torch.Tensor,
+    y: torch.Tensor,
+    f_opt: float | None = None,
+    proportion_of_best: float = 0.1,
+    minimize: bool = True,
+    minkowski_p: int = 2
+) -> dict[str, torch.Tensor]:
     """
     Differentiable PyTorch implementation of fitness-distance correlation.
 
@@ -28,6 +32,10 @@ def fitness_distance_correlation(
     -------
         Dictionary containing fitness-distance correlation and related features.
     """
+    if X.device != y.device:
+        raise ValueError("X and y must be on the same device.")
+    if X.dtype != torch.float32 or y.dtype != torch.float32:
+        raise ValueError("X and y must be of type torch.float32.")
     if proportion_of_best > 1 or proportion_of_best <= 0:
         raise ValueError("Proportion of the best samples must be in the interval (0, 1].")
 
@@ -79,10 +87,10 @@ def fitness_distance_correlation(
     correlation_fd = covariance_fd / (y_std * dist_std + 1e-12)  # Avoid division by zero
 
     return {
-        "fitness_distance.fd_correlation": correlation_fd.item(),
-        "fitness_distance.fd_cov": covariance_fd.item(),
-        "fitness_distance.distance_mean": dist_mean.item(),
-        "fitness_distance.distance_std": dist_std.item(),
-        "fitness_distance.fitness_mean": y_mean.item(),
-        "fitness_distance.fitness_std": y_std.item(),
+        "fitness_distance.fd_correlation": correlation_fd,
+        "fitness_distance.fd_cov": covariance_fd,
+        "fitness_distance.distance_mean": dist_mean,
+        "fitness_distance.distance_std": dist_std,
+        "fitness_distance.fitness_mean": y_mean,
+        "fitness_distance.fitness_std": y_std,
     }

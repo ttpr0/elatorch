@@ -3,54 +3,60 @@ import math
 
 import torch
 
-def _neff(n: int, weights: torch.Tensor | None = None) -> float:
-    if weights is None:
-        weights = torch.ones((n,))/ n
+def _neff(weights: torch.Tensor) -> torch.Tensor:
     return 1 / torch.sum(weights**2)
 
-def scotts_factor(n: int, d: int) -> float:
+def scotts_factor(n: int, d: int, weights: torch.Tensor | None = None) -> torch.Tensor:
     """Compute Scott's factor.
     """
-    return torch.pow(_neff(n), -1./(d+4))
+    if weights is None:
+        weights = torch.ones((n,1), dtype=torch.float32)/ n
+    return torch.pow(_neff(weights), -1./(d+4))
 
-def silverman_factor(n: int, d: int) -> float:
+def silverman_factor(n: int, d: int, weights: torch.Tensor | None = None) -> torch.Tensor:
     """Compute the Silverman factor.
     """
-    return torch.pow(_neff(n)*(d+2.0)/4.0, -1./(d+4))
+    if weights is None:
+        weights = torch.ones((n,1), dtype=torch.float32)/ n
+    return torch.pow(_neff(weights)*(d+2.0)/4.0, -1./(d+4))
 
-def gaussian_kde(data: torch.Tensor, points: torch.Tensor, covariance_factor: Callable[[int, int], float] = scotts_factor):
+def gaussian_kde(data: torch.Tensor, points: torch.Tensor, covariance_factor = scotts_factor) -> torch.Tensor:
     """
+    Gaussian Kernel Density Estimation.
 
     Parameters
     ----------
     data : torch.Tensor
         [N x D] Tensor containing the N data points with D dimensions.
+    points : torch.Tensor
+        [M x D] Tensor containing the M query points with D dimensions.
+    covariance_factor : Callable, optional
+        The covariance factor function, by default scotts_factor
 
+    Returns
+    -------
+    torch.Tensor
+        [M] Tensor containing the estimated density values at the query points.
     """
+    if data.device != points.device:
+        raise ValueError("Data and points must be on the same device.")
+    if data.dtype != torch.float32 or points.dtype != torch.float32:
+        raise ValueError("Data and points must be of type torch.float32.")
     data = torch.atleast_2d(data).T
     n, d = data.shape
     if d > n:
-        msg = ("Number of dimensions is greater than number of samples. "
-                "This results in a singular data covariance matrix, which "
-                "cannot be treated using the algorithms implemented in "
-                "`gaussian_kde`. Note that `gaussian_kde` interprets each "
-                "*column* of `dataset` to be a point; consider transposing "
-                "the input to `dataset`.")
-        raise ValueError(msg)
+        raise ValueError("The number of data points must be greater than the number of dimensions.")
 
-    factor = covariance_factor(n, d)
-    weights = torch.ones((n,1))/ n
+    weights = torch.ones((n,1), dtype=torch.float32, device=data.device)/ n
+    factor = covariance_factor(n, d, weights)
 
     _data_covariance = torch.atleast_2d(torch.cov(data.T))
     _data_cho_cov = torch.linalg.cholesky(_data_covariance)
-    covariance = _data_covariance * factor**2
     cho_cov = (_data_cho_cov * factor).to(torch.float32)
-    log_det = 2*torch.log(torch.diag(cho_cov * math.sqrt(2*math.pi))).sum()
 
     points = torch.atleast_2d(points).T
     if points.shape[1] != d:
         raise ValueError("points and xi must have same dimension")
-    m, _ = points.shape
 
     # Rescale the data
     data_ = torch.linalg.solve_triangular(cho_cov, data.T, upper=False).T

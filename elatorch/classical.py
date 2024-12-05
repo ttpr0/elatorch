@@ -4,7 +4,10 @@ import torch
 
 from .utils.kde import gaussian_kde, scotts_factor
 
-def ela_meta(X: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
+def ela_meta(
+    X: torch.Tensor,
+    y: torch.Tensor
+) -> dict[str, torch.Tensor]:
     """
     PyTorch differentiable implementation of the ELA meta features calculation.
 
@@ -28,7 +31,7 @@ def ela_meta(X: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
 
     def fit_linear_model(X, y):
         # Add bias term to X
-        X_with_bias = torch.cat([torch.ones((X.size(0), 1)), X], dim=1)
+        X_with_bias = torch.cat([torch.ones((X.size(0), 1), device=X.device, dtype=torch.float32), X], dim=1)
         # Compute weights using the closed-form solution
         weights = torch.linalg.lstsq(X_with_bias, y, driver='gels').solution
         bias = weights[0]
@@ -37,6 +40,11 @@ def ela_meta(X: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
 
     def predict_linear_model(X, bias, coefs):
         return X @ coefs + bias
+
+    if X.device != y.device:
+        raise ValueError("X and y must be on the same device.")
+    if X.dtype != torch.float32 or y.dtype != torch.float32:
+        raise ValueError("X and y must be of type torch.float32.")
 
     # Fit simple linear model
     lin_simple_bias, lin_simple_coefs = fit_linear_model(X, y)
@@ -96,9 +104,10 @@ def ela_meta(X: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
     }
 
 def nearest_better_clustering(
-    X: torch.Tensor, y: torch.Tensor,
+    X: torch.Tensor,
+    y: torch.Tensor,
     minimize: bool = True
-) -> dict:
+) -> dict[str, torch.Tensor]:
     """
     Differentiable PyTorch implementation of Nearest Better Clustering (NBC) features.
 
@@ -131,7 +140,7 @@ def nearest_better_clustering(
     def nearest_better_neighbors(X, y, distances):
         _distances = distances.clone()
         n_samples = X.size(0)
-        nb_distances = torch.full((n_samples,), float('inf'), device=X.device)
+        nb_distances = torch.full((n_samples,), float('inf'), dtype=torch.float32, device=X.device)
         nb_indices = torch.full((n_samples,), -1, dtype=torch.long, device=X.device)
         for idx in range(n_samples):
             dist = _distances[idx, :]
@@ -158,6 +167,12 @@ def nearest_better_clustering(
         std_x = torch.sqrt(((x - x_mean) ** 2).mean())
         std_y = torch.sqrt(((y - y_mean) ** 2).mean())
         return cov / (std_x * std_y + 1e-12)  # Avoid division by zero
+
+    # check inputs
+    if X.device != y.device:
+        raise ValueError("X and y must be on the same device.")
+    if X.dtype != torch.float32 or y.dtype != torch.float32:
+        raise ValueError("X and y must be of type torch.float32.")
 
     # Adjust objective values
     y = y if minimize else -y
@@ -194,7 +209,7 @@ def ela_distribution(
     y: torch.Tensor,
     ela_distr_skewness_type: int = 3,
     ela_distr_kurtosis_type: int = 3
-) -> dict[str, int | float]:
+) -> dict[str, torch.Tensor]:
     """ELA Distribution features using PyTorch for differentiable computation.
 
     Parameters
@@ -210,9 +225,13 @@ def ela_distribution(
 
     Returns
     -------
-    dict[str, int | float]
+    dict[str, torch.Tensor]
         Dictionary containing ELA Distribution features.
     """
+    if X.device != y.device:
+        raise ValueError("X and y must be on the same device.")
+    if X.dtype != torch.float32 or y.dtype != torch.float32:
+        raise ValueError("X and y must be of type torch.float32.")
     if ela_distr_skewness_type not in range(1,4):
         raise Exception('Skewness type must be an integer and in the intervall [1,3]')
     if ela_distr_kurtosis_type not in range(1,4):
@@ -230,7 +249,7 @@ def ela_distribution(
     y_centered = y - y_mean
     m2 = (y_centered.pow(2)).sum()
     m3 = (y_centered.pow(3)).sum()
-    skewness = torch.sqrt(torch.tensor(n, dtype=torch.float32)) * m3 / (m2 ** 1.5)
+    skewness = torch.sqrt(torch.tensor(n, dtype=torch.float32, device=X.device)) * m3 / (m2 ** 1.5)
     if ela_distr_skewness_type == 2:
         skewness = skewness * torch.sqrt(n * (n - 1)) / (n - 2)
     elif ela_distr_skewness_type == 3:
@@ -253,14 +272,14 @@ def ela_distribution(
     low = y.min() - 3 * covariance_factor * y.std()
     high = y.max() + 3 * covariance_factor * y.std()
     m = 512
-    positions = torch.linspace(low, high, m)
+    positions = torch.linspace(low, high, m, dtype=torch.float32, device=X.device)
     estimate = gaussian_kde(y, positions)
     grad = torch.diff(estimate)
     peaks = torch.logical_and(grad[:-1] < 0, grad[1:] > 0)
     # n_peaks = torch.sum(peaks)
-    peaks = torch.cat([torch.tensor([True]), peaks, torch.tensor([True])])
+    peaks = torch.cat([torch.tensor([True], device=X.device), peaks, torch.tensor([True], device=X.device)])
     indices = torch.nonzero(peaks)
-    modemass = torch.zeros((indices.size(0),))
+    modemass = torch.zeros((indices.size(0),), dtype=torch.float32, device=X.device)
     for idx in range(indices.size(0) - 1):
         a = indices[idx]
         b = indices[idx + 1] - 1
