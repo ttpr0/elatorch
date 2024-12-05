@@ -30,7 +30,7 @@ def ela_meta(X: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
         # Add bias term to X
         X_with_bias = torch.cat([torch.ones((X.size(0), 1)), X], dim=1)
         # Compute weights using the closed-form solution
-        weights = torch.linalg.lstsq(X_with_bias, y).solution
+        weights = torch.linalg.lstsq(X_with_bias, y, driver='gels').solution
         bias = weights[0]
         coefs = weights[1:]
         return bias, coefs
